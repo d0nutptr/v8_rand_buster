@@ -38,7 +38,7 @@ def sym_xs128p(sym_state0, sym_state1):
 
 
 # Symbolic execution of xs128p
-def sym_mr(slvr, sym_state0, sym_state1, generated, multiple):
+def sym_floor_random(slvr, sym_state0, sym_state1, generated, multiple):
     sym_state0, sym_state1 = sym_xs128p(sym_state0, sym_state1)
 
     # "::ToDouble"
@@ -85,7 +85,7 @@ def sym_mr(slvr, sym_state0, sym_state1, generated, multiple):
     return sym_state0, sym_state1
 
 
-def solve(points, multiple):
+def solve_instance(points, multiple, unknown_leading=False):
     # setup symbolic state for xorshift128+
     ostate0, ostate1 = BitVecs('ostate0 ostate1', 64)
     sym_state0 = ostate0
@@ -98,8 +98,13 @@ def solve(points, multiple):
 
     # run symbolic xorshift128+ algorithm for three iterations
     # using the recovered numbers as constraints
+
+    if unknown_leading:
+        # we want to try to predict one value ahead so let's slide one unknown into the calculation
+        sym_state0, sym_state1 = sym_xs128p(sym_state0, sym_state1)
+
     for point in points:
-        sym_state0, sym_state1 = sym_mr(slvr, sym_state0, sym_state1, point, multiple)
+        sym_state0, sym_state1 = sym_floor_random(slvr, sym_state0, sym_state1, point, multiple)
 
     if slvr.check() == sat:
         # get a solved state
@@ -111,6 +116,22 @@ def solve(points, multiple):
     else:
         print("Failed to find a valid solution")
         return None, None
+
+def solve(points, multiple, lead):
+    if lead > 0:
+        last_state0 = None
+        last_state1 = None
+
+        for i in range(0, int(lead)):
+            last_state0, last_state1 = solve_instance(points, multiple, True)
+
+            state0, state1, output = xs128p(last_state0, last_state1)
+            new_point = math.floor(multiple * to_double(output))
+            points = [new_point] + points
+
+        return last_state0, last_state1
+    else:
+        return solve_instance(points, multiple)
 
 
 def to_double(value):
@@ -141,24 +162,28 @@ def get_args():
                         help="Specifies the multiplier used in 'Math.floor(MULTIPLE * Math.random())'. Defaults to 1.")
     parser.add_argument('--gen',
                         help="Instead of predicting state, take a state pair and generate output. (state0,state1,num)")
+    parser.add_argument('--lead',
+                        help="The number of elements backwards to predict")
 
     args = parser.parse_args()
 
     multiple_arg = args.multiple
+    lead_arg = args.lead
+
     multiple = 1.0 if multiple_arg is None else float(multiple_arg)
+    lead = 0 if lead_arg is None else float(lead_arg)
 
     if args.gen:
         state0, state1, count = list(map(lambda x: int(x), args.gen.split(",")))
 
-        return multiple, (state0, state1, count), None
+        return None, multiple, (state0, state1, count), None
     else:
         points = list(map(lambda line: int(line), sys.stdin.readlines()))
 
         assert len(
             points) != 0, "Pipe the leaked, unbucketed points via STDIN.\nExample:\n\tcat FILE | python3 xs2.py --multiple 1000"
 
-        return multiple, None, points
-
+        return lead, multiple, None, points
 
 def main():
     """
@@ -177,7 +202,7 @@ def main():
     # -----------------------------------------------------------------------------------------------------------------------------------------------------------
     """
 
-    multiple, gen, points = get_args()
+    lead, multiple, gen, points = get_args()
 
     if gen is not None:
         state0, state1, count = gen
@@ -186,7 +211,7 @@ def main():
             state0, state1, output = xs128p(state0, state1)
             print(math.floor(multiple * to_double(output)))
     else:
-        state0, state1 = solve(points, multiple)
+        state0, state1 = solve(points, multiple, lead)
 
         if state0 is not None and state1 is not None:
             print("{},{}".format(state0, state1))
